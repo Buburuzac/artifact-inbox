@@ -97,6 +97,17 @@ def test_html_served_sandboxed(client):
     assert "readState" in raw.text and raw.text.index("readState") < raw.text.index("<script>1")
 
 
+def test_unicode_title_raw_and_download(client):
+    iid = client.post("/api/push", headers=AUTH, data={"title": "Вечерний час"},
+                      files={"file": ("evening.html", b"<p>ok</p>")}).json()["id"]
+    for suffix, kind in (("", "inline"), ("?download=1", "attachment")):
+        response = client.get(f"/raw/{iid}{suffix}")
+        assert response.status_code == 200
+        assert "<p>ok</p>" in response.text
+        assert response.headers["content-disposition"].startswith(kind + ";")
+        assert "filename*=UTF-8''%D0%92" in response.headers["content-disposition"]
+
+
 def test_html_state_roundtrip(client):
     iid = client.post("/api/push", headers=AUTH, data={"title": "S"}, files={"file": ("a.html", b"<html><head></head>x")}).json()["id"]
     assert client.get(f"/state/{iid}").json() == {}

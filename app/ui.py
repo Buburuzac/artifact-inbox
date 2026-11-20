@@ -220,8 +220,14 @@ def raw(request: Request) -> Response:
              "markdown": "text/plain; charset=utf-8", "text": "text/plain; charset=utf-8"}[it["type"]]
     dl = request.query_params.get("download")
     safe = "".join(ch if ch.isalnum() or ch in "-_ ." else "_" for ch in it["title"])[:80].strip() or "item"
+    fallback = "".join(ch if ch.isascii() and (ch.isalnum() or ch in "-_ .") else "_"
+                       for ch in safe).strip(" ._") or "item"
+    ext = store.EXT[it["type"]]
+    filename = f"{safe}.{ext}"
+    disposition = (f"{'attachment' if dl else 'inline'}; filename=\"{fallback}.{ext}\"; "
+                   f"filename*=UTF-8''{urllib.parse.quote(filename, safe='')}")
     headers = {"X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store",
-               "Content-Disposition": f"{'attachment' if dl else 'inline'}; filename=\"{safe}.{store.EXT[it['type']]}\""}
+               "Content-Disposition": disposition}
     if it["type"] != "pdf":
         # Untrusted bytes: no scripts, no network, opaque origin even if opened directly.
         headers["Content-Security-Policy"] = ("sandbox; default-src 'none'; style-src 'unsafe-inline'; "
