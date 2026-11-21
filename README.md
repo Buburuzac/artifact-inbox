@@ -30,6 +30,8 @@ to just answer in chat.
 - **Reads well**: PDFs in the browser's viewer, sanitised markdown, sandboxed interactive HTML (a pushed checklist
   keeps its ticks), plain text. Dark mode and phone layout.
 - **Projects**: create folder-like projects and file related artifacts in them; a project can be browsed independently.
+- **Share links**: create an expiring, revocable read-only link for one artifact; the secret token is stored only as a hash.
+- **Navigation**: a responsive sidebar for the inbox, projects, categories, agents and settings.
 - **Triage**: unread/done, categories with counts, "mark all done" per category, source agent and summary on every item.
 - **Small**: Python, SQLite, one container, ~256 MB.
 

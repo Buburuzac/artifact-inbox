@@ -8,11 +8,12 @@
 | `/api/claim` | Public, protected by the single-use claim code in the request. Must be reachable by agents. |
 | `/install`, `/install/SKILL.md` | Public by design. Setup docs for agents; `?claim=` only echoes the code you already hold. |
 | `/healthz` | Public (health check). |
+| `/s/<token>`, `/s/<token>/raw` | Public read and download access to one artifact while the link is valid. The token is stored as a SHA-256 hash and can be revoked. |
 | everything else (web UI) | HTTP basic auth if `INBOX_UI_PASSWORD` is set (user `INBOX_UI_USER`, default `admin`); otherwise **open**. |
 
 The simplest safe setup: set `INBOX_UI_PASSWORD`, serve over HTTPS. Alternatively keep the port on
 localhost or a private network (Tailscale, WireGuard), or leave the password empty and let a proxy do SSO for the
-UI paths while letting `/mcp`, `/api` and `/install` through (they carry their own protection).
+UI paths while letting `/mcp`, `/api`, `/install` and `/s/` through (they carry their own protection).
 Basic auth has no lockout; use a long password.
 
 ## Setup
@@ -28,14 +29,14 @@ The UI is then on `http://127.0.0.1:8000`.
 ## Behind a reverse proxy
 
 With `INBOX_UI_PASSWORD` set, a plain proxy is enough: forward everything. To use SSO instead, leave the password
-empty and make two rules: the UI behind your auth, and `/mcp` + `/api` + `/install` without it.
+empty and make two rules: the UI behind your auth, and `/mcp` + `/api` + `/install` + `/s/` without it.
 `examples/compose.traefik.yml` shows this with Traefik labels (forward-auth middleware for the UI).
 
 Caddy sketch:
 
 ```
 inbox.example.com {
-    @agents path /mcp* /api/* /install*
+    @agents path /mcp* /api/* /install* /s/*
     handle @agents { reverse_proxy artifact-inbox:8000 }
     handle {
         basicauth { you <bcrypt-hash> }   # not needed if INBOX_UI_PASSWORD is set
@@ -50,3 +51,5 @@ that path is protected only by the single shared token, so use a long random one
 
 Install links contain the claim code in the URL, so a proxy access log may record it. It is single-use and short-lived,
 so a leaked, already-used link is harmless; keep `INBOX_CLAIM_TTL_MIN` low if you log full URLs.
+Share URLs also contain secret tokens. Keep them out of public logs and chat history when possible; revoke a link
+from its artifact page if it is disclosed to the wrong person.

@@ -256,6 +256,25 @@ async def api_update(request: Request) -> Response:
                          "category": it["category"], "project_id": it["project_id"]}, 200)
 
 
+async def api_projects(request: Request) -> Response:
+    if request.method == "GET":
+        return JSONResponse({"projects": store.list_projects()})
+    try:
+        payload = bytearray()
+        async for chunk in request.stream():
+            payload += chunk
+            if len(payload) > 4096:
+                return JSONResponse({"error": "too large"}, 413)
+        body = json.loads(payload)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "expected a JSON object"}, 400)
+        return JSONResponse(store.create_project(body.get("name")), 201)
+    except (ValueError, UnicodeDecodeError):
+        return JSONResponse({"error": "invalid JSON"}, 400)
+    except store.PushError as exc:
+        return JSONResponse({"error": str(exc)}, exc.status)
+
+
 def _ui_creds():
     """Optional built-in login for the web UI (HTTP basic auth). Unset password = rely on your proxy."""
     pw = os.environ.get("INBOX_UI_PASSWORD", "")
@@ -303,7 +322,8 @@ class Guard:
                     return await self.app(scope, receive, send)
                 finally:
                     store.CURRENT_AGENT.reset(tok)
-            elif not (path in self.PUBLIC or path.startswith("/install/")):
+            elif not (path in self.PUBLIC or path.startswith("/install/") or
+                      (path.startswith("/s/") and scope["method"] in ("GET", "HEAD"))):
                 creds = _ui_creds()
                 got = h.get(b"authorization", b"")
                 if creds and not _basic_ok(got, creds):
@@ -328,6 +348,7 @@ def build():
     app.router.routes.extend(agents_ui.routes)
     app.router.routes.append(Route("/api/claim", api_claim, methods=["POST"]))
     app.router.routes.append(Route("/api/push", api_push, methods=["POST"]))
+    app.router.routes.append(Route("/api/projects", api_projects, methods=["GET", "POST"]))
     app.router.routes.append(Route("/api/items/{id}", api_update, methods=["PUT"]))
     return Guard(app)
 

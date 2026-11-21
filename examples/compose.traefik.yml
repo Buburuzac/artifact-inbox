@@ -15,8 +15,8 @@ services:
       traefik.http.routers.artifact-inbox.tls: "true"
       traefik.http.routers.artifact-inbox.priority: "10"
       traefik.http.routers.artifact-inbox.middlewares: "sso@file"   # your forward-auth middleware
-      # Agents: bypass SSO; the app enforces the bearer token. /install is token-free docs.
-      traefik.http.routers.artifact-inbox-agents.rule: "Host(`inbox.example.com`) && (PathPrefix(`/mcp`) || PathPrefix(`/api`) || PathPrefix(`/install`))"
+      # Agents use bearer auth; /install is public setup and /s/ holds read-only share links.
+      traefik.http.routers.artifact-inbox-agents.rule: "Host(`inbox.example.com`) && (PathPrefix(`/mcp`) || PathPrefix(`/api`) || PathPrefix(`/install`) || PathPrefix(`/s/`))"
       traefik.http.routers.artifact-inbox-agents.entrypoints: "websecure"
       traefik.http.routers.artifact-inbox-agents.tls: "true"
       traefik.http.routers.artifact-inbox-agents.priority: "100"

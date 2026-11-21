@@ -2,8 +2,10 @@
 import base64
 import binascii
 import contextvars
+import hashlib
 import ipaddress
 import os
+import secrets
 import socket
 import sqlite3
 import threading
@@ -42,6 +44,15 @@ CREATE TABLE IF NOT EXISTS projects (
   name TEXT NOT NULL COLLATE NOCASE UNIQUE,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS shares (
+  id TEXT PRIMARY KEY,
+  item_id TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  expires_at TEXT,
+  revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS shares_item ON shares(item_id, created_at DESC);
 CREATE TABLE IF NOT EXISTS item_state (
   id TEXT PRIMARY KEY,
   data TEXT NOT NULL
@@ -329,6 +340,14 @@ def set_done(item_id: str, done: bool) -> dict | None:
     return get_item(item_id)
 
 
+def set_project(item_id: str, project_id: str | None) -> dict | None:
+    project_id = _project_id(project_id)
+    with _lock, db() as c:
+        if not c.execute("UPDATE items SET project_id=? WHERE id=?", (project_id, item_id)).rowcount:
+            return None
+    return get_item(item_id)
+
+
 def mark_all_done(category=None) -> int:
     sql, args = "UPDATE items SET done=1, done_at=? WHERE done=0", [now()]
     if category:
@@ -343,6 +362,8 @@ def delete_item(item_id: str) -> bool:
     if not it:
         return False
     with _lock, db() as c:
+        c.execute("DELETE FROM shares WHERE item_id=?", (item_id,))
+        c.execute("DELETE FROM item_state WHERE id=?", (item_id,))
         c.execute("DELETE FROM items WHERE id=?", (item_id,))
     (FILES_DIR / it["file_path"]).unlink(missing_ok=True)
     return True
@@ -350,6 +371,49 @@ def delete_item(item_id: str) -> bool:
 
 def file_for(item: dict) -> Path:
     return FILES_DIR / item["file_path"]
+
+
+SHARE_TTLS = {"day": 86400, "week": 7 * 86400, "month": 30 * 86400, "never": None}
+
+
+def create_share(item_id: str, duration: str = "week") -> tuple[dict, str]:
+    if not get_item(item_id):
+        raise PushError(404, "no such item")
+    if duration not in SHARE_TTLS:
+        raise PushError(400, "duration must be day, week, month or never")
+    token = secrets.token_urlsafe(32)
+    expires = SHARE_TTLS[duration]
+    row = {"id": uuid.uuid4().hex, "item_id": item_id, "created_at": now(),
+           "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + expires)) if expires else None,
+           "revoked_at": None}
+    with _lock, db() as c:
+        c.execute("INSERT INTO shares(id,item_id,token_hash,created_at,expires_at,revoked_at) VALUES(?,?,?,?,?,NULL)",
+                  (row["id"], item_id, hashlib.sha256(token.encode()).hexdigest(), row["created_at"], row["expires_at"]))
+    return row, token
+
+
+def list_shares(item_id: str) -> list[dict]:
+    with db() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT id,item_id,created_at,expires_at,revoked_at FROM shares WHERE item_id=? ORDER BY created_at DESC",
+            (item_id,))]
+
+
+def revoke_share(item_id: str, share_id: str) -> bool:
+    with _lock, db() as c:
+        return c.execute("UPDATE shares SET revoked_at=? WHERE id=? AND item_id=? AND revoked_at IS NULL",
+                         (now(), share_id, item_id)).rowcount > 0
+
+
+def shared_item(token: str) -> dict | None:
+    if not isinstance(token, str) or len(token) != 43 or not all(c.isalnum() or c in "-_" for c in token):
+        return None
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    with db() as c:
+        r = c.execute("""SELECT i.* FROM shares s JOIN items i ON i.id=s.item_id
+                         WHERE s.token_hash=? AND s.revoked_at IS NULL
+                         AND (s.expires_at IS NULL OR s.expires_at>?)""", (digest, now())).fetchone()
+    return dict(r) if r else None
 
 
 MAX_STATE = 256 * 1024

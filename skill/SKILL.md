@@ -67,13 +67,14 @@ curl -sS -X POST https://inbox.example.com/api/push \
   -F summary="Compares three refinance offers by APR, fees and break-even month."
 ```
 
-Fields: `file` (required), `title`, `category`, `source_agent`, `summary`, `type` (optional override). Success is
-`201` with `{"id","link","type","size","category"}`.
+Fields: `file` (required), `title`, `category`, `project_id` (from `list_projects`), `source_agent`, `summary`,
+`type` (optional override). Success is `201` with `{"id","link","type","size","category","project_id"}`.
 
 ## Rules
 
 1. **Category**: a short lowercase word (research, finance, jobs, server, drafts). Call `list_categories` first and
    reuse an existing one rather than inventing a near-duplicate ("research", not "researching"). Default is `general`.
+   Call `list_projects` too; if the work belongs to an existing project, pass its `id` as `project_id` when pushing.
 2. **Title**: descriptive and specific; no timestamps or dates-as-ids (the inbox already records when).
 3. **Always set `source_agent`** (your name, e.g. `claude-code`, `hermes`; the server overrides it with your registered name if you use a per-agent token) and a **1-2 sentence `summary`**.
 4. After pushing, tell the user the returned `link`. Do **not** paste the document body into chat again.
@@ -102,6 +103,8 @@ push_artifact(title="Vector DB options for the notes app", category="research",
 **create_project(name)** creates a folder-like project. Call `list_projects()` to reuse an existing project, then pass
 its id as `project_id` to `push_artifact` or `update_artifact`. `delete_project(id)` removes only the project; its
 artifacts remain in the inbox unassigned.
+REST-only agents can use `GET /api/projects` and `POST /api/projects` with JSON `{"name":"Project name"}`
+(both require the bearer token), then pass `project_id` in multipart `POST /api/push`.
 ```
 A PDF (base64 of the file bytes, no `data:` prefix, no line breaks needed):
 ```sh

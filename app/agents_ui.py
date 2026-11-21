@@ -31,7 +31,7 @@ def _view(extra: str = "", status: int = 200) -> Response:
             + ("<h2 class=grp>Pending install links</h2>" + "".join(pending) if pending else "")
             + "<h2 class=grp>Agents</h2>" + ("".join(rows) or "<div class=empty>No per-agent tokens yet.</div>")
             + "<p class=meta>The admin token (<code>INBOX_API_TOKEN</code>) keeps working and is not listed here.</p>")
-    return ui.page("Agents", body, status)
+    return ui.page("Agents", body, status, side=ui.sidebar(section="agents"))
 
 
 async def index(request: Request) -> Response:

@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import re
 import sys
 import tempfile
 
@@ -164,6 +165,76 @@ def test_projects_ui(client):
     created = client.post("/projects", data={"name": "UI folder"}, follow_redirects=False)
     assert created.status_code == 303 and created.headers["location"].startswith("/projects/")
     assert "UI folder" in client.get("/projects").text
+
+
+def test_project_assignment_and_navigation(client):
+    project = store.create_project("Navigation project")
+    iid = client.post("/api/push", headers=AUTH, data={"title": "Filed report"},
+                      files={"file": ("report.md", b"# Report")}).json()["id"]
+    home = client.get("/").text
+    assert "All projects" in home and "Settings" in home and "Agents" in home
+    assert client.post(f"/i/{iid}/project", data={"project_id": project["id"]},
+                       follow_redirects=False).status_code == 303
+    assert store.get_item(iid)["project_id"] == project["id"]
+    assert "Filed report" in client.get(f"/projects/{project['id']}?tab=all").text
+    assert "Manage agents" in client.get("/settings").text
+    assert client.post(f"/i/{iid}/project", data={"project_id": ""}).status_code == 200
+    assert store.get_item(iid)["project_id"] is None
+
+
+def test_rest_agent_can_create_and_push_into_project(client):
+    assert client.get("/api/projects").status_code == 401
+    created = client.post("/api/projects", headers=AUTH, json={"name": "REST project"})
+    assert created.status_code == 201
+    project_id = created.json()["id"]
+    assert any(p["id"] == project_id for p in client.get("/api/projects", headers=AUTH).json()["projects"])
+    pushed = client.post("/api/push", headers=AUTH, data={"title": "REST report", "project_id": project_id},
+                         files={"file": ("report.md", b"# Report")})
+    assert pushed.status_code == 201 and pushed.json()["project_id"] == project_id
+    assert store.get_item(pushed.json()["id"])["project_id"] == project_id
+    assert client.post("/api/projects", headers=AUTH, json={"name": "REST project"}).status_code == 409
+
+
+def test_share_link_is_scoped_revocable_and_hashed(client, monkeypatch):
+    iid = client.post("/api/push", headers=AUTH, data={"title": "Отчёт"},
+                      files={"file": ("report.md", b"# Shared report")}).json()["id"]
+    created = client.post(f"/i/{iid}/shares", data={"duration": "week"})
+    assert created.status_code == 200
+    token = re.search(r"/s/([A-Za-z0-9_-]{43})", created.text).group(1)
+    share = store.list_shares(iid)[0]
+    with store.db() as db:
+        row = db.execute("SELECT token_hash FROM shares WHERE id=?", (share["id"],)).fetchone()
+    assert token not in row["token_hash"]
+    assert token not in client.get(f"/i/{iid}").text  # shown only once
+    monkeypatch.setenv("INBOX_UI_PASSWORD", "secret")
+    assert client.get(f"/i/{iid}").status_code == 401
+    public = client.get(f"/s/{token}")
+    assert public.status_code == 200 and "Shared report" in public.text
+    assert "All artifacts" not in public.text and "Revoke" not in public.text
+    assert public.headers["referrer-policy"] == "no-referrer"
+    raw = client.get(f"/s/{token}/raw?download=1")
+    assert raw.status_code == 200 and raw.content == b"# Shared report"
+    assert "filename*=UTF-8''" in raw.headers["content-disposition"]
+    assert client.get(f"/s/{'x'*43}").status_code == 404
+    assert client.get(f"/state/{iid}").status_code == 401
+    auth_ui = {"Authorization": "Basic " + base64.b64encode(b"admin:secret").decode()}
+    assert client.post(f"/i/{iid}/shares/{share['id']}/revoke", headers=auth_ui,
+                       follow_redirects=False).status_code == 303
+    assert client.get(f"/s/{token}").status_code == 404
+    assert client.get(f"/s/{token}/raw").status_code == 404
+
+
+def test_share_expiry_and_html_sandbox(client):
+    iid = client.post("/api/push", headers=AUTH, data={"title": "Interactive"},
+                      files={"file": ("page.html", b"<html><script>1</script></html>")}).json()["id"]
+    _, token = store.create_share(iid, "day")
+    raw = client.get(f"/s/{token}/raw")
+    assert raw.status_code == 200
+    assert "sandbox allow-scripts" in raw.headers["content-security-policy"]
+    assert "readState" not in raw.text
+    with store.db() as db:
+        db.execute("UPDATE shares SET expires_at='2000-01-01T00:00:00Z' WHERE item_id=?", (iid,))
+    assert client.get(f"/s/{token}").status_code == 404
 
 
 def test_ui_sort_filter_bulk(client):
