@@ -121,6 +121,20 @@ def update_artifact(id: str, content_base64: Optional[str] = None, content_text:
 
 
 @mcp.tool()
+def move_artifact(id: str, project_id: Optional[str] = None) -> dict:
+    """Move an existing artifact to a project without replacing its content. Get a project id from list_projects;
+    omit project_id or pass an empty string to leave the artifact unassigned. Returns updated metadata.
+    """
+    try:
+        it = store.set_project(id, project_id)
+    except store.PushError as e:
+        raise _err(e)
+    if not it:
+        raise ValueError("404: no such item")
+    return public(it)
+
+
+@mcp.tool()
 def list_items(status: Literal["unread", "done", "all"] = "unread", category: Optional[str] = None,
                project_id: Optional[str] = None,
                limit: int = 50, offset: int = 0) -> dict:
@@ -275,6 +289,26 @@ async def api_projects(request: Request) -> Response:
         return JSONResponse({"error": str(exc)}, exc.status)
 
 
+async def api_move_item(request: Request) -> Response:
+    payload = bytearray()
+    async for chunk in request.stream():
+        payload += chunk
+        if len(payload) > 4096:
+            return JSONResponse({"error": "too large"}, 413)
+    try:
+        body = json.loads(payload)
+        if not isinstance(body, dict) or "project_id" not in body:
+            return JSONResponse({"error": "project_id is required"}, 400)
+        it = store.set_project(request.path_params["id"], body["project_id"])
+    except (ValueError, UnicodeDecodeError):
+        return JSONResponse({"error": "invalid JSON"}, 400)
+    except store.PushError as exc:
+        return JSONResponse({"error": str(exc)}, exc.status)
+    if not it:
+        return JSONResponse({"error": "no such item"}, 404)
+    return JSONResponse(public(it))
+
+
 def _ui_creds():
     """Optional built-in login for the web UI (HTTP basic auth). Unset password = rely on your proxy."""
     pw = os.environ.get("INBOX_UI_PASSWORD", "")
@@ -349,6 +383,7 @@ def build():
     app.router.routes.append(Route("/api/claim", api_claim, methods=["POST"]))
     app.router.routes.append(Route("/api/push", api_push, methods=["POST"]))
     app.router.routes.append(Route("/api/projects", api_projects, methods=["GET", "POST"]))
+    app.router.routes.append(Route("/api/items/{id}/project", api_move_item, methods=["PATCH"]))
     app.router.routes.append(Route("/api/items/{id}", api_update, methods=["PUT"]))
     return Guard(app)
 

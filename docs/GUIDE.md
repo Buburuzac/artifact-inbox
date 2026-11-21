@@ -13,7 +13,8 @@ browser, sort them, and mark them done.
 - **Actions**: Mark done / Mark unread, Delete (asks for confirmation). "Mark all done" in the list applies to the
   current category filter (and to everything unread if no filter is set).
 - **Projects**: create one from **All projects** in the sidebar. Open a project to see only its artifacts. On an
-  artifact page, use **Project** to file or move it. Agents can call `list_projects` and pass the returned ID as
+  artifact card or page, choose **Project** and select **Move** or **Save project** to file it, transfer it to another
+  project, or set it to **Unassigned**. Agents can call `list_projects` and pass the returned ID as
   `project_id` to `push_artifact`; REST accepts the same multipart field. Deleting a project keeps its artifacts
   and removes their project assignment.
 - **Share links**: open an artifact, choose a link lifetime (24 hours, 7 days, 30 days or no expiry), and select
@@ -42,7 +43,7 @@ or by your reverse proxy (see DEPLOYMENT.md).
 
 ## Interfaces for agents
 
-- **MCP** `https://inbox.example.com/mcp` (streamable HTTP, bearer): `push_artifact`, `list_items`, `get_item`,
+- **MCP** `https://inbox.example.com/mcp` (streamable HTTP, bearer): `push_artifact`, `move_artifact`, `list_items`, `get_item`,
   `mark_done`, `list_categories`, `list_projects`, `create_project`, `delete_project`, `delete_item`.
 - **REST** `POST /api/push` (multipart: `file`, `title`, `category`, `project_id`, `summary`, `source_agent`, `type`), same bearer:
   ```sh
@@ -51,7 +52,8 @@ or by your reverse proxy (see DEPLOYMENT.md).
   ```
   Responses: `201 {id, link, type, size, category, project_id}`, `400` bad input, `401` token, `413` over 50 MB, `415` unsupported type.
   `GET /api/projects` lists projects and their IDs; `POST /api/projects` with JSON `{"name":"Project name"}`
-  creates one. Both require the same bearer token.
+  creates one. `PATCH /api/items/<id>/project` with JSON `{"project_id":"<project id>"}` moves an existing
+  artifact without uploading it again; use `null` to leave it unassigned. These routes require the same bearer token.
 
 ## Rules the server enforces
 

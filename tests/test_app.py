@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from starlette.testclient import TestClient  # noqa: E402
 
-from app import server, store  # noqa: E402
+from app import server, store, ui  # noqa: E402
 
 AUTH = {"Authorization": "Bearer " + "t" * 64}
 PDF = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF"
@@ -116,9 +116,27 @@ def test_csrf(client):
     assert r.status_code == 403 and store.get_item(iid)
 
 
+def test_public_origin_works_behind_proxy(client, monkeypatch):
+    monkeypatch.setattr(ui, "BASE_URL", "https://art.odusfera.pl")
+    iid = client.post("/api/push", headers=AUTH, data={"title": "Behind proxy"},
+                      files={"file": ("a.md", b"# Report")}).json()["id"]
+    headers = {"Origin": "https://art.odusfera.pl"}
+    share = client.post(f"/i/{iid}/shares", headers=headers, data={"duration": "day"})
+    assert share.status_code == 200 and "https://art.odusfera.pl/s/" in share.text
+    project = store.create_project("Proxy destination")
+    assert client.post(f"/i/{iid}/project", headers=headers, data={"project_id": project["id"]},
+                       follow_redirects=False).status_code == 303
+    assert store.get_item(iid)["project_id"] == project["id"]
+    assert client.put(f"/state/{iid}", headers=headers, content=b'{"checked":true}').status_code == 204
+    assert client.post(f"/i/{iid}/shares", headers={"Origin": "https://evil.example"},
+                       data={"duration": "day"}).status_code == 403
+    assert client.put(f"/state/{iid}", headers={"Origin": "https://evil.example"},
+                      content=b"{}").status_code == 403
+
+
 def test_mcp_tools_flow(client):
     tools = {t["name"] for t in rpc(client, "tools/list", {})["result"]["tools"]}
-    assert tools == {"push_artifact", "update_artifact", "list_items", "get_item", "mark_done", "list_categories", "delete_item",
+    assert tools == {"push_artifact", "update_artifact", "move_artifact", "list_items", "get_item", "mark_done", "list_categories", "delete_item",
                      "create_project", "list_projects", "delete_project"}
     b64 = base64.b64encode(PDF).decode()
     res = call(client, "push_artifact", {"title": "A PDF", "category": "Finance", "content_base64": b64,
@@ -180,6 +198,36 @@ def test_project_assignment_and_navigation(client):
     assert "Manage agents" in client.get("/settings").text
     assert client.post(f"/i/{iid}/project", data={"project_id": ""}).status_code == 200
     assert store.get_item(iid)["project_id"] is None
+
+
+def test_move_between_projects_from_list_and_agent(client):
+    first = store.create_project("Move source")
+    second = store.create_project("Move destination")
+    iid = client.post("/api/push", headers=AUTH, data={"title": "Moving report", "project_id": first["id"]},
+                      files={"file": ("report.md", b"# Keep this content")}).json()["id"]
+    store.set_done(iid, True)
+    source = client.get(f"/projects/{first['id']}?tab=all").text
+    assert f"action='/i/{iid}/project'" in source
+    assert f"value='{second['id']}'" in source
+    moved = client.post(f"/i/{iid}/project", data={"project_id": second["id"],
+                                                   "next": f"/projects/{first['id']}?tab=all"}, follow_redirects=False)
+    assert moved.status_code == 303 and moved.headers["location"] == f"/projects/{first['id']}?tab=all"
+    assert "Moving report" not in client.get(f"/projects/{first['id']}?tab=all").text
+    assert "Moving report" in client.get(f"/projects/{second['id']}?tab=all").text
+    assert store.get_item(iid)["done"] == 1
+    assert client.get(f"/raw/{iid}").text == "# Keep this content"
+
+    moved = call(client, "move_artifact", {"id": iid, "project_id": first["id"]})["structuredContent"]
+    assert moved["project_id"] == first["id"]
+    assert client.patch(f"/api/items/{iid}/project", headers=AUTH,
+                        json={"project_id": second["id"]}).json()["project_id"] == second["id"]
+    assert client.patch(f"/api/items/{iid}/project", headers=AUTH,
+                        json={"project_id": "missing"}).status_code == 400
+    assert client.patch(f"/api/items/{iid}/project", headers=AUTH, json={}).status_code == 400
+    assert client.patch(f"/api/items/{iid}/project", json={"project_id": None}).status_code == 401
+    assert call(client, "move_artifact", {"id": iid})["structuredContent"]["project_id"] is None
+    assert store.get_item(iid)["done"] == 1
+    assert client.get(f"/raw/{iid}").text == "# Keep this content"
 
 
 def test_rest_agent_can_create_and_push_into_project(client):

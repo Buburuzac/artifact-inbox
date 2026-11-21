@@ -32,6 +32,7 @@ aside.side{border-right:1px solid var(--bd);background:var(--side);padding:22px 
 .heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:12px}.lede{color:var(--mut);margin:-5px 0 20px}.meta{color:var(--mut);font-size:.82rem;margin:3px 0}.sum{margin:9px 0 1px;color:var(--fg)}
 nav.tabs,.chips,.bar,.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.bar{margin:16px 0}.row{margin-top:13px}nav.tabs{border-bottom:1px solid var(--bd);margin:16px 0 20px;gap:20px}nav.tabs a{color:var(--mut);text-decoration:none;padding:8px 2px 10px;border-bottom:2px solid transparent;font-size:.89rem}nav.tabs a.on{color:var(--ac);border-color:var(--ac);font-weight:650}
 .card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:17px 20px;margin:11px 0;box-shadow:var(--shadow)}.card:hover{border-color:color-mix(in srgb,var(--ac) 28%,var(--bd))}.card.done .t{color:var(--mut)}.t{font-weight:650;font-size:1.06rem;text-decoration:none;color:var(--fg);word-break:break-word;letter-spacing:-.01em}
+.project-move{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:14px;padding-top:13px;border-top:1px solid var(--bd)}.project-move select{min-width:150px;max-width:100%}
 form{display:inline;margin:0}button,.btn{font:inherit;font-size:.86rem;font-weight:550;padding:7px 12px;border-radius:8px;border:1px solid var(--bd);background:var(--card);color:var(--fg);cursor:pointer;text-decoration:none;display:inline-block}button:hover,.btn:hover{border-color:var(--ac);color:var(--ac)}button.ok,.btn.primary{background:var(--ac);border-color:var(--ac);color:#fff}button.bad{color:var(--bad)}input,select{font:inherit;padding:8px 11px;border:1px solid var(--bd);border-radius:8px;background:var(--card);color:var(--fg);max-width:100%}input:focus,select:focus{outline:2px solid var(--ac);outline-offset:1px}
 h2.grp{font-size:.85rem;margin:25px 0 8px;color:var(--mut);text-transform:uppercase;letter-spacing:.07em}.doc{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:16px 24px;overflow-wrap:anywhere}.doc img{max-width:100%}.doc pre{overflow:auto;background:var(--bg);padding:12px;border-radius:8px}.doc table{border-collapse:collapse}.doc td,.doc th{border:1px solid var(--bd);padding:5px 9px}
 iframe.view,embed.view{width:100%;height:78vh;border:1px solid var(--bd);border-radius:12px;background:#fff}pre.txt{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;padding:12px 0}.empty{color:var(--mut);padding:40px 16px;text-align:center;background:var(--card);border:1px dashed var(--bd);border-radius:14px}.notice{background:var(--ac-soft);color:var(--fg);padding:13px 16px;border-radius:10px;margin:14px 0}.share-link{display:block;overflow-wrap:anywhere;padding:10px 12px;background:var(--bg);border-radius:8px;margin:8px 0}
@@ -123,7 +124,21 @@ def safe_next(v: str | None, default: str = "/") -> str:
     return v if v and v.startswith("/") and not v.startswith("//") and "\\" not in v else default
 
 
-def card(it: dict, nxt: str) -> str:
+def same_origin(request: Request, origin: str) -> bool:
+    # The tunnel can forward a private Host while the browser sends the public Origin.
+    # INBOX_BASE_URL is configured by the operator and is the exact public origin we serve.
+    public = urllib.parse.urlsplit(BASE_URL)
+    return origin in (f"{request.url.scheme}://{request.headers.get('host')}",
+                      f"{public.scheme}://{public.netloc}")
+
+
+def project_options(projects: list[dict], current: str | None) -> str:
+    return (f"<option value=''{' selected' if not current else ''}>Unassigned</option>" + "".join(
+        f"<option value='{p['id']}'{' selected' if p['id'] == current else ''}>{e(p['name'])}</option>"
+        for p in projects))
+
+
+def card(it: dict, nxt: str, projects: list[dict]) -> str:
     done = it["done"]
     toggle = (f"<form method=post action='/i/{it['id']}/{'undone' if done else 'done'}'>"
               f"<input type=hidden name=next value='{e(nxt)}'>"
@@ -134,10 +149,15 @@ def card(it: dict, nxt: str) -> str:
     summ = f"<div class=sum>{e(it['summary'])}</div>" if it["summary"] else ""
     project = (f" · <a href='/projects/{it['project_id']}'>{e(it['project_name'])}</a>"
                if it.get("project_id") and it.get("project_name") else "")
+    move = (f"<form method=post action='/i/{it['id']}/project' class=project-move>"
+            f"<input type=hidden name=next value='{e(nxt)}'>"
+            f"<label for='project-{it['id']}'>Project</label>"
+            f"<select id='project-{it['id']}' name=project_id>{project_options(projects, it.get('project_id'))}</select>"
+            "<button>Move</button></form>") if projects else "<div class=project-move><a href=/projects>Create a project</a> to file this artifact.</div>"
     return (f"<div class='card{' done' if done else ''}'><a class=t href='/i/{it['id']}'>{e(it['title'])}</a>"
             f"<div class=meta>{e(it['category'])} · {e(it['type'])} · {e(it['source_agent'])} · "
             f"{e(it['created_at'][:16].replace('T', ' '))} UTC{project}{' · done' if done else ''}</div>{summ}"
-            f"<div class=row><a class=btn href='/i/{it['id']}'>Open</a>{toggle}{delete}</div></div>")
+            f"<div class=row><a class=btn href='/i/{it['id']}'>Open</a>{toggle}{delete}</div>{move}</div>")
 
 
 def index(request: Request) -> Response:
@@ -146,6 +166,7 @@ def index(request: Request) -> Response:
     sort = "category" if q.get("sort") == "category" else "recent"
     cat = store.norm_category(q["cat"]) if q.get("cat") else ""
     items = store.list_items(tab, cat or None, limit=500, sort=sort)
+    projects = store.list_projects()
     here = "/" + qs(tab=tab, sort=sort if sort != "recent" else "", cat=cat)
     sorts = "".join(f"<a class='{'on' if s == sort else ''}' href='/{qs(tab=tab, sort=s if s != 'recent' else '', cat=cat)}'>{label}</a>"
                     for s, label in (("recent", "Newest first"), ("category", "By category")))
@@ -165,10 +186,10 @@ def index(request: Request) -> Response:
                 last = it["category"]
                 n = sum(1 for x in items if x["category"] == last)
                 out.append(f"<h2 class=grp>{e(last)} ({n})</h2>")
-            out.append(card(it, here))
+            out.append(card(it, here, projects))
         body_items = "".join(out)
     else:
-        body_items = "".join(card(it, here) for it in items)
+        body_items = "".join(card(it, here, projects) for it in items)
     heading = f"{e(cat) if cat else {'unread': 'Unread', 'done': 'Done', 'all': 'All items'}[tab]}"
     return page("artifact-inbox", f"<h1>{heading} <span class=meta>({len(items)})</span></h1>"
                         f"<nav class=tabs>{sorts}</nav><div class=bar>{bulk}</div>{body_items}",
@@ -220,9 +241,7 @@ def _reader(it: dict, notice: str = "") -> Response:
     summ = f"<p class=sum>{e(it['summary'])}</p>" if it["summary"] else ""
     project = (f" · <a href='/projects/{it['project_id']}'>{e(it['project_name'])}</a>"
                if it.get("project_id") and it.get("project_name") else "")
-    choices = "<option value=''>Unassigned</option>" + "".join(
-        f"<option value='{p['id']}'{' selected' if p['id'] == it.get('project_id') else ''}>{e(p['name'])}</option>"
-        for p in store.list_projects())
+    choices = project_options(store.list_projects(), it.get("project_id"))
     project_form = (f"<form method=post action='{me}/project' class=bar>"
                     f"<label for=item-project>Project</label><select id=item-project name=project_id>{choices}</select>"
                     "<button>Save project</button></form>")
@@ -275,7 +294,7 @@ async def move_item(request: Request) -> Response:
         return page("Project", f"<h1>Could not move artifact</h1><p>{e(exc)}</p>", exc.status)
     if not item:
         return Response("not found", 404)
-    return RedirectResponse(f"/i/{item['id']}", 303)
+    return RedirectResponse(safe_next(form.get("next"), f"/i/{item['id']}"), 303)
 
 
 async def projects(request: Request) -> Response:
@@ -305,9 +324,10 @@ async def project(request: Request) -> Response:
         return page("Not found", "<h1>Project not found</h1><p><a href='/projects'>Projects</a></p>", 404)
     tab = request.query_params.get("tab") if request.query_params.get("tab") in ("unread", "done", "all") else "unread"
     items = store.list_items(tab, project_id=p["id"], limit=500)
+    projects = store.list_projects()
     tabs = " ".join(f"<a class='{'on' if t == tab else ''}' href='/projects/{p['id']}?tab={t}'>{label}</a>"
                    for t, label in (("unread", "Unread"), ("done", "Done"), ("all", "All")))
-    body = "".join(card(it, f"/projects/{p['id']}?tab={tab}") for it in items) or "<div class=empty>Nothing here.</div>"
+    body = "".join(card(it, f"/projects/{p['id']}?tab={tab}", projects) for it in items) or "<div class=empty>Nothing here.</div>"
     return page(p["name"], f"<p><a href='/projects'>&larr; Projects</a></p><h1>{e(p['name'])}</h1>"
                 f"<nav class=tabs>{tabs}</nav>{body}", side=sidebar(tab, project_id=p["id"]))
 
@@ -404,7 +424,7 @@ async def state(request: Request) -> Response:
         return Response("not found", 404)
     if request.method == "PUT":
         origin = request.headers.get("origin")
-        if not origin or urllib.parse.urlsplit(origin).netloc != request.headers.get("host"):
+        if not origin or not same_origin(request, origin):
             return Response("cross-origin request refused", 403)
         body = await request.body()
         if len(body) > store.MAX_STATE:
@@ -423,7 +443,7 @@ async def state(request: Request) -> Response:
 async def _form(request: Request):
     # Cheap CSRF guard on top of SSO cookies: same-origin POSTs only.
     origin = request.headers.get("origin")
-    if origin and urllib.parse.urlsplit(origin).netloc != request.headers.get("host"):
+    if origin and not same_origin(request, origin):
         return None
     return await request.form()
 

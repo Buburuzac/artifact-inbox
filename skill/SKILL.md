@@ -99,13 +99,15 @@ push_artifact(title="Vector DB options for the notes app", category="research",
               content_text="# Vector DBs\n\n...", summary="Compares pgvector, Qdrant and sqlite-vec for ~50k notes.",
               source_agent="hermes")
 -> {"id":"3f9c...","link":"https://inbox.example.com/i/3f9c...","type":"markdown","size":2113,"category":"research"}
+```
 
 **create_project(name)** creates a folder-like project. Call `list_projects()` to reuse an existing project, then pass
-its id as `project_id` to `push_artifact` or `update_artifact`. `delete_project(id)` removes only the project; its
+its id as `project_id` to `push_artifact`. Use `move_artifact(id, project_id)` to transfer an existing artifact
+without uploading its content again; omit `project_id` to leave it unassigned. `delete_project(id)` removes only the project; its
 artifacts remain in the inbox unassigned.
 REST-only agents can use `GET /api/projects` and `POST /api/projects` with JSON `{"name":"Project name"}`
-(both require the bearer token), then pass `project_id` in multipart `POST /api/push`.
-```
+(both require the bearer token), then pass `project_id` in multipart `POST /api/push`. To move an existing artifact,
+use `PATCH /api/items/<id>/project` with JSON `{"project_id":"<project id>"}` or `{"project_id":null}` to unassign it.
 A PDF (base64 of the file bytes, no `data:` prefix, no line breaks needed):
 ```sh
 base64 -w0 report.pdf    # shell: produce the string to pass as content_base64
@@ -132,6 +134,9 @@ list_items(status="unread", category="finance", limit=10)  ->  {"items":[{"id":"
 ```
 get_item(id="a01c...")  ->  {"id":"a01c...","title":"Q3 household budget review","done":false,"link":"https://inbox.example.com/i/a01c..."}
 ```
+
+**move_artifact(id, project_id?)** - move an existing artifact between projects without changing its file or done state.
+Get the target ID from `list_projects()`; omit `project_id` to remove the project assignment.
 
 **update_artifact(id, content_base64? | content_text? | url?, filename?, type?, title?, category?, summary?)** - replace an item you already pushed when the document changed. Keeps the id, link, done state and saved checkbox state. Use it instead of pushing a duplicate. REST equivalent: `PUT /api/items/<id>` (multipart `file`, same bearer token).
 ```
