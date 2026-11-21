@@ -29,6 +29,7 @@ to just answer in chat.
   and the inbox then labels everything it pushes with that name. Revoke one agent later without touching the others.
 - **Reads well**: PDFs in the browser's viewer, sanitised markdown, sandboxed interactive HTML (a pushed checklist
   keeps its ticks), plain text. Dark mode and phone layout.
+- **Projects**: create folder-like projects and file related artifacts in them; a project can be browsed independently.
 - **Triage**: unread/done, categories with counts, "mark all done" per category, source agent and summary on every item.
 - **Small**: Python, SQLite, one container, ~256 MB.
 

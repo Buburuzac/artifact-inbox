@@ -88,15 +88,20 @@ by the file name.
 **list_categories()** - call before every push.
 ```
 list_categories()  ->  {"categories":[{"category":"research","count":4,"unread":2},{"category":"finance","count":1,"unread":1}]}
+list_projects()    ->  {"projects":[{"id":"a01c...","name":"Home renovation","count":4,"unread":2}]}
 ```
 
-**push_artifact(title, category?, content_base64? | content_text? | url?, filename?, type?, summary?, source_agent?)**
+**push_artifact(title, category?, project_id?, content_base64? | content_text? | url?, filename?, type?, summary?, source_agent?)**
 Markdown you wrote yourself:
 ```
 push_artifact(title="Vector DB options for the notes app", category="research",
               content_text="# Vector DBs\n\n...", summary="Compares pgvector, Qdrant and sqlite-vec for ~50k notes.",
               source_agent="hermes")
 -> {"id":"3f9c...","link":"https://inbox.example.com/i/3f9c...","type":"markdown","size":2113,"category":"research"}
+
+**create_project(name)** creates a folder-like project. Call `list_projects()` to reuse an existing project, then pass
+its id as `project_id` to `push_artifact` or `update_artifact`. `delete_project(id)` removes only the project; its
+artifacts remain in the inbox unassigned.
 ```
 A PDF (base64 of the file bytes, no `data:` prefix, no line breaks needed):
 ```sh

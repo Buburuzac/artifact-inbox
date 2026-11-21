@@ -34,7 +34,13 @@ CREATE TABLE IF NOT EXISTS items (
   size INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   done INTEGER NOT NULL DEFAULT 0,
-  done_at TEXT
+  done_at TEXT,
+  project_id TEXT
+);
+CREATE TABLE IF NOT EXISTS projects (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+  created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS item_state (
   id TEXT PRIMARY KEY,
@@ -87,11 +93,62 @@ def init() -> None:
     with db() as c:
         c.execute("PRAGMA journal_mode=WAL")
         c.executescript(SCHEMA)
+        columns = {r[1] for r in c.execute("PRAGMA table_info(items)")}
+        if "project_id" not in columns:
+            c.execute("ALTER TABLE items ADD COLUMN project_id TEXT")
+        c.execute("CREATE INDEX IF NOT EXISTS items_project_created ON items(project_id, created_at DESC)")
 
 
 def norm_category(v) -> str:
     v = " ".join(str(v or "").split()).lower()[:40]
     return v or "general"
+
+
+def norm_project_name(v) -> str:
+    name = " ".join(str(v or "").split())[:120]
+    if not name:
+        raise PushError(400, "project name is required")
+    return name
+
+
+def create_project(name) -> dict:
+    project = {"id": uuid.uuid4().hex, "name": norm_project_name(name), "created_at": now()}
+    try:
+        with _lock, db() as c:
+            c.execute("INSERT INTO projects(id,name,created_at) VALUES (?,?,?)",
+                      (project["id"], project["name"], project["created_at"]))
+    except sqlite3.IntegrityError:
+        raise PushError(409, "a project with this name already exists")
+    return project
+
+
+def get_project(project_id: str) -> dict | None:
+    with db() as c:
+        r = c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+    return dict(r) if r else None
+
+
+def list_projects() -> list[dict]:
+    with db() as c:
+        rows = c.execute("""SELECT p.id, p.name, p.created_at, COUNT(i.id) AS count,
+                            COALESCE(SUM(i.done=0), 0) AS unread
+                           FROM projects p LEFT JOIN items i ON i.project_id=p.id
+                           GROUP BY p.id ORDER BY p.name COLLATE NOCASE""").fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_project(project_id: str) -> bool:
+    with _lock, db() as c:
+        c.execute("UPDATE items SET project_id=NULL WHERE project_id=?", (project_id,))
+        return c.execute("DELETE FROM projects WHERE id=?", (project_id,)).rowcount > 0
+
+
+def _project_id(project_id) -> str | None:
+    if project_id is None or project_id == "":
+        return None
+    if not get_project(str(project_id)):
+        raise PushError(400, "no such project")
+    return str(project_id)
 
 
 def _is_text(data: bytes) -> bool:
@@ -165,7 +222,7 @@ def fetch_url(url: str) -> tuple[bytes, str]:
 
 
 def add_item(*, title, category=None, data: bytes, filename=None, declared_type=None,
-             summary=None, source_agent=None, from_text=False) -> dict:
+             summary=None, source_agent=None, project_id=None, from_text=False) -> dict:
     title = " ".join(str(title or "").split())[:300]
     if not title:
         raise PushError(400, "title is required")
@@ -173,6 +230,7 @@ def add_item(*, title, category=None, data: bytes, filename=None, declared_type=
         raise PushError(400, "empty content")
     if len(data) > MAX_BYTES:
         raise PushError(413, "file too large (limit 50 MB)")
+    project_id = _project_id(project_id)
     typ = detect_type(data, filename, declared_type, from_text)
     item_id = uuid.uuid4().hex
     path = FILES_DIR / f"{item_id}.{EXT[typ]}"  # random name; user-supplied names never touch disk
@@ -180,15 +238,15 @@ def add_item(*, title, category=None, data: bytes, filename=None, declared_type=
     row = (item_id, title, norm_category(category),
            " ".join(str(CURRENT_AGENT.get() or source_agent or "").split())[:80] or "unknown",
            (str(summary).strip()[:1000] or None) if summary else None,
-           typ, path.name, len(data), now())
+           typ, path.name, len(data), now(), project_id)
     with _lock, db() as c:
-        c.execute("INSERT INTO items(id,title,category,source_agent,summary,type,file_path,size,created_at)"
-                  " VALUES (?,?,?,?,?,?,?,?,?)", row)
+        c.execute("INSERT INTO items(id,title,category,source_agent,summary,type,file_path,size,created_at,project_id)"
+                  " VALUES (?,?,?,?,?,?,?,?,?,?)", row)
     return get_item(item_id)
 
 
 def update_item(item_id, *, data: bytes, filename=None, declared_type=None, title=None, category=None,
-                summary=None, from_text=False) -> dict:
+                summary=None, project_id=None, from_text=False) -> dict:
     """Replace an item's content in place. Keeps id/link, done flag and saved page state."""
     it = get_item(item_id)
     if not it:
@@ -197,6 +255,8 @@ def update_item(item_id, *, data: bytes, filename=None, declared_type=None, titl
         raise PushError(400, "empty content")
     if len(data) > MAX_BYTES:
         raise PushError(413, "file too large (limit 50 MB)")
+    if project_id is not None:
+        project_id = _project_id(project_id)
     typ = detect_type(data, filename, declared_type, from_text)
     path = FILES_DIR / f"{item_id}.{EXT[typ]}"
     path.write_bytes(data)
@@ -205,9 +265,9 @@ def update_item(item_id, *, data: bytes, filename=None, declared_type=None, titl
     new_title = " ".join(str(title or "").split())[:300] or it["title"]
     new_summary = (str(summary).strip()[:1000] or None) if summary else it["summary"]
     with _lock, db() as c:
-        c.execute("UPDATE items SET title=?,category=?,summary=?,type=?,file_path=?,size=? WHERE id=?",
+        c.execute("UPDATE items SET title=?,category=?,summary=?,type=?,file_path=?,size=?,project_id=? WHERE id=?",
                   (new_title, norm_category(category) if category else it["category"], new_summary,
-                   typ, path.name, len(data), item_id))
+                   typ, path.name, len(data), project_id if project_id is not None else it["project_id"], item_id))
     return get_item(item_id)
 
 
@@ -222,11 +282,12 @@ def decode_b64(s: str) -> bytes:
 
 def get_item(item_id: str) -> dict | None:
     with db() as c:
-        r = c.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+        r = c.execute("SELECT items.*, projects.name AS project_name FROM items "
+                      "LEFT JOIN projects ON projects.id=items.project_id WHERE items.id=?", (item_id,)).fetchone()
     return dict(r) if r else None
 
 
-def list_items(status="unread", category=None, limit=50, offset=0, sort="recent") -> list[dict]:
+def list_items(status="unread", category=None, project_id=None, limit=50, offset=0, sort="recent") -> list[dict]:
     where, args = [], []
     if status == "unread":
         where.append("done=0")
@@ -237,8 +298,12 @@ def list_items(status="unread", category=None, limit=50, offset=0, sort="recent"
     if category:
         where.append("category=?")
         args.append(norm_category(category))
-    order = "category ASC, created_at DESC" if sort == "category" else "created_at DESC, rowid DESC"
-    sql = "SELECT * FROM items" + (" WHERE " + " AND ".join(where) if where else "")
+    if project_id:
+        where.append("project_id=?")
+        args.append(str(project_id))
+    order = "items.category ASC, items.created_at DESC" if sort == "category" else "items.created_at DESC, items.rowid DESC"
+    sql = ("SELECT items.*, projects.name AS project_name FROM items "
+           "LEFT JOIN projects ON projects.id=items.project_id" + (" WHERE " + " AND ".join(where) if where else ""))
     sql += f" ORDER BY {order} LIMIT ? OFFSET ?"
     with db() as c:
         return [dict(r) for r in c.execute(sql, (*args, max(1, min(int(limit), 500)), max(0, int(offset))))]

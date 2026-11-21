@@ -117,7 +117,8 @@ def test_csrf(client):
 
 def test_mcp_tools_flow(client):
     tools = {t["name"] for t in rpc(client, "tools/list", {})["result"]["tools"]}
-    assert tools == {"push_artifact", "update_artifact", "list_items", "get_item", "mark_done", "list_categories", "delete_item"}
+    assert tools == {"push_artifact", "update_artifact", "list_items", "get_item", "mark_done", "list_categories", "delete_item",
+                     "create_project", "list_projects", "delete_project"}
     b64 = base64.b64encode(PDF).decode()
     res = call(client, "push_artifact", {"title": "A PDF", "category": "Finance", "content_base64": b64,
                                          "filename": "x.pdf", "source_agent": "test", "summary": "s"})
@@ -139,6 +140,30 @@ def test_mcp_tools_flow(client):
     assert call(client, "get_item", {"id": iid})["structuredContent"]["done"] is True
     assert call(client, "delete_item", {"id": iid})["structuredContent"]["deleted"] is True
     assert call(client, "get_item", {"id": iid})["isError"]
+
+
+def test_projects_can_file_and_filter_artifacts(client):
+    project = call(client, "create_project", {"name": "House renovation"})["structuredContent"]
+    assert project["name"] == "House renovation"
+    duplicate = call(client, "create_project", {"name": " house   renovation "})
+    assert duplicate["isError"] and "409" in duplicate["content"][0]["text"]
+    pushed = call(client, "push_artifact", {"title": "Kitchen plan", "content_text": "# plan",
+                                              "project_id": project["id"]})["structuredContent"]
+    assert pushed["project_id"] == project["id"]
+    listed = call(client, "list_items", {"status": "all", "project_id": project["id"]})["structuredContent"]
+    assert any(item["id"] == pushed["id"] for item in listed["items"])
+    projects = call(client, "list_projects", {})["structuredContent"]["projects"]
+    assert next(p for p in projects if p["id"] == project["id"])["count"] == 1
+    page = client.get(f"/projects/{project['id']}").text
+    assert "House renovation" in page and "Kitchen plan" in page
+    assert call(client, "delete_project", {"id": project["id"]})["structuredContent"]["deleted"]
+    assert store.get_item(pushed["id"])["project_id"] is None
+
+
+def test_projects_ui(client):
+    created = client.post("/projects", data={"name": "UI folder"}, follow_redirects=False)
+    assert created.status_code == 303 and created.headers["location"].startswith("/projects/")
+    assert "UI folder" in client.get("/projects").text
 
 
 def test_ui_sort_filter_bulk(client):

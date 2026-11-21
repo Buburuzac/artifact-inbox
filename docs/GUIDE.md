@@ -12,6 +12,9 @@ browser, sort them, and mark them done.
   sanitised, HTML is shown in a sandboxed frame (scripts run, no network; localStorage persists per item), text is shown as-is.
 - **Actions**: Mark done / Mark unread, Delete (asks for confirmation). "Mark all done" in the list applies to the
   current category filter (and to everything unread if no filter is set).
+- **Projects**: create a project from **Manage projects** in the sidebar. Projects act like folders: open one to see
+  only its artifacts. Agents can use `create_project`, then pass its returned `id` as `project_id` to `push_artifact`.
+  Deleting a project keeps its artifacts and simply removes their project assignment.
 - Dark mode and phone layout follow the device.
 
 ## Connecting an agent

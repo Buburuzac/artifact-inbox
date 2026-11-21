@@ -34,7 +34,7 @@ def link(item_id: str) -> str:
 def public(it: dict) -> dict:
     return {"id": it["id"], "title": it["title"], "category": it["category"], "source_agent": it["source_agent"],
             "summary": it["summary"], "type": it["type"], "size": it["size"], "created_at": it["created_at"],
-            "done": bool(it["done"]), "done_at": it["done_at"], "link": link(it["id"])}
+            "project_id": it["project_id"], "done": bool(it["done"]), "done_at": it["done_at"], "link": link(it["id"])}
 
 
 def _err(e: store.PushError):
@@ -45,7 +45,8 @@ def _err(e: store.PushError):
 def push_artifact(title: str, category: str = "general", content_base64: Optional[str] = None,
                   content_text: Optional[str] = None, url: Optional[str] = None,
                   filename: Optional[str] = None, type: Optional[Literal["pdf", "markdown", "html", "text"]] = None,
-                  summary: Optional[str] = None, source_agent: Optional[str] = None) -> dict:
+                  summary: Optional[str] = None, source_agent: Optional[str] = None,
+                  project_id: Optional[str] = None) -> dict:
     """Save a finished document into the user's artifact inbox (inbox.example.com) so they can read it later.
 
     Use this when you have produced a report, research summary, generated PDF or any artifact longer than
@@ -66,7 +67,8 @@ def push_artifact(title: str, category: str = "general", content_base64: Optiona
       types by filename or content. Set it only to force markdown/html/text.
     - summary: 1-2 sentences saying what the document is and why it matters.
     - source_agent: your own name (e.g. "claude-code", "hermes"). Always set it.
-    Limit 50 MB. Returns {id, link, type, size, category}.
+    - project_id: optional id of a project from list_projects; use it to file the artifact in that project.
+    Limit 50 MB. Returns {id, link, type, size, category, project_id}.
     """
     given = [x for x in (content_base64, content_text, url) if x]
     if len(given) != 1:
@@ -80,11 +82,11 @@ def push_artifact(title: str, category: str = "general", content_base64: Optiona
             data, fetched_name = store.fetch_url(url)
             filename = filename or fetched_name
         it = store.add_item(title=title, category=category, data=data, filename=filename, declared_type=type,
-                            summary=summary, source_agent=source_agent, from_text=bool(content_text))
+                            summary=summary, source_agent=source_agent, project_id=project_id, from_text=bool(content_text))
     except store.PushError as e:
         raise _err(e)
     return {"id": it["id"], "link": link(it["id"]), "type": it["type"], "size": it["size"],
-            "category": it["category"]}
+            "category": it["category"], "project_id": it["project_id"]}
 
 
 @mcp.tool()
@@ -92,12 +94,12 @@ def update_artifact(id: str, content_base64: Optional[str] = None, content_text:
                     url: Optional[str] = None, filename: Optional[str] = None,
                     type: Optional[Literal["pdf", "markdown", "html", "text"]] = None,
                     title: Optional[str] = None, category: Optional[str] = None,
-                    summary: Optional[str] = None) -> dict:
+                    summary: Optional[str] = None, project_id: Optional[str] = None) -> dict:
     """Replace the content of an item you already pushed, keeping its id, link, done state and (for HTML)
     saved checkbox state. Use this instead of push_artifact when the document changed; do not push a duplicate.
 
     Provide exactly ONE content source (content_base64, content_text or url), as in push_artifact.
-    title, category and summary are optional and left unchanged when omitted. Returns {id, link, type, size, category}.
+    title, category, summary and project_id are optional and left unchanged when omitted. Pass an empty project_id to remove it.
     """
     given = [x for x in (content_base64, content_text, url) if x]
     if len(given) != 1:
@@ -111,25 +113,26 @@ def update_artifact(id: str, content_base64: Optional[str] = None, content_text:
             data, fetched_name = store.fetch_url(url)
             filename = filename or fetched_name
         it = store.update_item(id, data=data, filename=filename, declared_type=type, title=title,
-                               category=category, summary=summary, from_text=bool(content_text))
+                               category=category, summary=summary, project_id=project_id, from_text=bool(content_text))
     except store.PushError as e:
         raise _err(e)
     return {"id": it["id"], "link": link(it["id"]), "type": it["type"], "size": it["size"],
-            "category": it["category"]}
+            "category": it["category"], "project_id": it["project_id"]}
 
 
 @mcp.tool()
 def list_items(status: Literal["unread", "done", "all"] = "unread", category: Optional[str] = None,
+               project_id: Optional[str] = None,
                limit: int = 50, offset: int = 0) -> dict:
     """List items in the artifact inbox, newest first.
 
     Use this to check what is already in the inbox (e.g. to avoid pushing a duplicate) or to find an item id.
-    status: unread (default) | done | all. category: exact category to filter by (optional).
+    status: unread (default) | done | all. category and project_id are exact optional filters.
     limit: 1-500 (default 50). offset: for paging. Returns {items:[{id,title,category,type,summary,
     source_agent,created_at,done,link,...}], count}. Does not return document bodies.
     """
     try:
-        items = [public(i) for i in store.list_items(status, category, limit, offset)]
+        items = [public(i) for i in store.list_items(status, category, project_id, limit, offset)]
     except store.PushError as e:
         raise _err(e)
     return {"items": items, "count": len(items)}
@@ -172,6 +175,29 @@ def list_categories() -> dict:
 
 
 @mcp.tool()
+def create_project(name: str) -> dict:
+    """Create a project (a folder for related artifacts). Returns its id and name; pass the id as project_id to push_artifact."""
+    try:
+        return store.create_project(name)
+    except store.PushError as e:
+        raise _err(e)
+
+
+@mcp.tool()
+def list_projects() -> dict:
+    """List projects with their total and unread artifact counts. Use the returned id as project_id when filing artifacts."""
+    return {"projects": store.list_projects()}
+
+
+@mcp.tool()
+def delete_project(id: str) -> dict:
+    """Delete an empty or no-longer-needed project. Its artifacts are kept, but become unassigned. Use only on explicit user request."""
+    if not store.delete_project(id):
+        raise ValueError("404: no such project")
+    return {"deleted": True, "id": id}
+
+
+@mcp.tool()
 def delete_item(id: str) -> dict:
     """Permanently delete an item and its file. Irreversible.
 
@@ -195,11 +221,11 @@ async def api_push(request: Request) -> Response:
         it = store.add_item(title=form.get("title") or os.path.splitext(f.filename or "")[0],
                             category=form.get("category"), data=data, filename=f.filename,
                             declared_type=form.get("type"), summary=form.get("summary"),
-                            source_agent=form.get("source_agent"))
+                            source_agent=form.get("source_agent"), project_id=form.get("project_id"))
     except store.PushError as e:
         return JSONResponse({"error": str(e)}, e.status)
     return JSONResponse({"id": it["id"], "link": link(it["id"]), "type": it["type"], "size": it["size"],
-                         "category": it["category"]}, 201)
+                         "category": it["category"], "project_id": it["project_id"]}, 201)
 
 
 async def api_claim(request: Request) -> Response:
@@ -222,11 +248,12 @@ async def api_update(request: Request) -> Response:
     try:
         it = store.update_item(request.path_params["id"], data=data, filename=f.filename,
                                declared_type=form.get("type"), title=form.get("title"),
-                               category=form.get("category"), summary=form.get("summary"))
+                               category=form.get("category"), summary=form.get("summary"),
+                               project_id=form.get("project_id") if "project_id" in form else None)
     except store.PushError as e:
         return JSONResponse({"error": str(e)}, e.status)
     return JSONResponse({"id": it["id"], "link": link(it["id"]), "type": it["type"], "size": it["size"],
-                         "category": it["category"]}, 200)
+                         "category": it["category"], "project_id": it["project_id"]}, 200)
 
 
 def _ui_creds():

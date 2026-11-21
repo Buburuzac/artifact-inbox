@@ -101,7 +101,7 @@ def page(title: str, body: str, status: int = 200, side: str = "", script: str =
         "Cache-Control": "no-store"})
 
 
-def sidebar(tab: str = "", cat: str = "", sort: str = "") -> str:
+def sidebar(tab: str = "", cat: str = "", sort: str = "", project_id: str = "") -> str:
     cnt = store.counts()
     s_arg = sort if sort and sort != "recent" else ""
     status = "".join(
@@ -112,7 +112,12 @@ def sidebar(tab: str = "", cat: str = "", sort: str = "") -> str:
         f"<a class='nav{' on' if c['category'] == cat else ''}' href='/{qs(tab=view, sort=s_arg, cat=c['category'])}'>"
         f"{e(c['category'])}<span>{c['count']}</span></a>" for c in store.categories(view))
     cats = cats or "<div class=meta style='padding:0 10px'>No categories yet</div>"
+    projects = "".join(
+        f"<a class='nav{' on' if p['id'] == project_id else ''}' href='/projects/{p['id']}'>{e(p['name'])}<span>{p['count']}</span></a>"
+        for p in store.list_projects())
+    projects = projects or "<div class=meta style='padding:0 10px'>No projects yet</div>"
     return (f"<aside class=side><a class=brand href=/>artifact-inbox</a><h3>Inbox</h3>{status}"
+            f"<h3>Projects</h3>{projects}<a class=nav href=/projects>Manage projects</a>"
             f"<h3>Categories</h3>{cats}<h3>Admin</h3><a class=nav href=/agents>Agents</a></aside>")
 
 
@@ -138,9 +143,11 @@ def card(it: dict, nxt: str) -> str:
               f"data-confirm='Delete this item permanently?'>"
               f"<input type=hidden name=next value='{e(nxt)}'><button class=bad>Delete</button></form>")
     summ = f"<div class=sum>{e(it['summary'])}</div>" if it["summary"] else ""
+    project = (f" · <a href='/projects/{it['project_id']}'>{e(it['project_name'])}</a>"
+               if it.get("project_id") and it.get("project_name") else "")
     return (f"<div class='card{' done' if done else ''}'><a class=t href='/i/{it['id']}'>{e(it['title'])}</a>"
             f"<div class=meta>{e(it['category'])} · {e(it['type'])} · {e(it['source_agent'])} · "
-            f"{e(it['created_at'][:16].replace('T', ' '))} UTC{' · done' if done else ''}</div>{summ}"
+            f"{e(it['created_at'][:16].replace('T', ' '))} UTC{project}{' · done' if done else ''}</div>{summ}"
             f"<div class=row><a class=btn href='/i/{it['id']}'>Open</a>{toggle}{delete}</div></div>")
 
 
@@ -204,11 +211,47 @@ def reader(request: Request) -> Response:
     delete = (f"<form method=post action='{me}/delete' data-confirm='Delete this item permanently?'>"
               f"<input type=hidden name=next value='/'><button class=bad>Delete</button></form>")
     summ = f"<p class=sum>{e(it['summary'])}</p>" if it["summary"] else ""
+    project = (f" · <a href='/projects/{it['project_id']}'>{e(it['project_name'])}</a>"
+               if it.get("project_id") and it.get("project_name") else "")
     head = (f"<p><a href='/'>&larr; Inbox</a></p><h1>{e(it['title'])}</h1>"
             f"<div class=meta>{e(it['category'])} · {e(it['type'])} · {e(it['source_agent'])} · "
-            f"{e(it['created_at'][:16].replace('T', ' '))} UTC{' · done' if done else ''}</div>{summ}"
+            f"{e(it['created_at'][:16].replace('T', ' '))} UTC{project}{' · done' if done else ''}</div>{summ}"
             f"<div class=row>{toggle}<a class=btn href='{raw}?download=1'>Download</a>{delete}</div><br>")
-    return page(it["title"], head + view, side=sidebar("all", it["category"]), script=extra)
+    return page(it["title"], head + view, side=sidebar("all", it["category"], project_id=it.get("project_id") or ""), script=extra)
+
+
+async def projects(request: Request) -> Response:
+    if request.method == "POST":
+        form = await _form(request)
+        if form is None:
+            return Response("cross-origin request refused", 403)
+        try:
+            project = store.create_project(form.get("name"))
+        except store.PushError as exc:
+            return page("Projects", f"<h1>Projects</h1><p class=meta>{e(exc)}</p>" + _project_form(), 400)
+        return RedirectResponse(f"/projects/{project['id']}", 303)
+    rows = "".join(f"<div class=card><a class=t href='/projects/{p['id']}'>{e(p['name'])}</a>"
+                   f"<div class=meta>{p['count']} artifacts · {p['unread']} unread</div></div>" for p in store.list_projects())
+    return page("Projects", f"<h1>Projects</h1>{_project_form()}{rows or '<div class=empty>No projects yet.</div>'}",
+                side=sidebar())
+
+
+def _project_form() -> str:
+    return ("<form method=post class=bar><input name=name required maxlength=120 placeholder='Project name' "
+            "aria-label='Project name'><button class=ok>Create project</button></form>")
+
+
+async def project(request: Request) -> Response:
+    p = store.get_project(request.path_params["id"])
+    if not p:
+        return page("Not found", "<h1>Project not found</h1><p><a href='/projects'>Projects</a></p>", 404)
+    tab = request.query_params.get("tab") if request.query_params.get("tab") in ("unread", "done", "all") else "unread"
+    items = store.list_items(tab, project_id=p["id"], limit=500)
+    tabs = " ".join(f"<a class='{'on' if t == tab else ''}' href='/projects/{p['id']}?tab={t}'>{label}</a>"
+                   for t, label in (("unread", "Unread"), ("done", "Done"), ("all", "All")))
+    body = "".join(card(it, f"/projects/{p['id']}?tab={tab}") for it in items) or "<div class=empty>Nothing here.</div>"
+    return page(p["name"], f"<p><a href='/projects'>&larr; Projects</a></p><h1>{e(p['name'])}</h1>"
+                f"<nav class=tabs>{tabs}</nav>{body}", side=sidebar(tab, project_id=p["id"]))
 
 
 def raw(request: Request) -> Response:
@@ -322,4 +365,5 @@ routes = [
     Route("/", index), Route("/healthz", healthz),
     Route("/install", _public_text("docs/INSTALL.md")), Route("/install/SKILL.md", _public_text("skill/SKILL.md")), Route("/i/{id}", reader), Route("/raw/{id}", raw), Route("/state/{id}", state, methods=["GET", "PUT"]),
     Route("/i/{id}/{action}", act, methods=["POST"]), Route("/bulk/done", bulk, methods=["POST"]),
+    Route("/projects", projects, methods=["GET", "POST"]), Route("/projects/{id}", project),
 ]
