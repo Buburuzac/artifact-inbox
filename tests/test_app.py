@@ -39,6 +39,10 @@ def call(client, name, args):
     return out
 
 
+def form(data=None):
+    return {"_csrf": ui.CSRF_TOKEN, **(data or {})}
+
+
 def test_auth(client):
     assert client.post("/mcp", json={}).status_code == 401
     assert client.post("/mcp", headers={"Authorization": "Bearer nope"}, json={}).status_code == 401
@@ -57,12 +61,12 @@ def test_rest_push_list_done_delete(client):
     assert "<h1>Hello</h1>" in page and "<script>alert" not in page and "href=\"javascript" not in page and "<img src=x" not in page
     assert client.get("/").text.count("Notes") >= 1
     assert "Notes" not in client.get("/?tab=done").text
-    assert client.post(f"/i/{iid}/done", data={"next": "/"}, follow_redirects=False).status_code == 303
+    assert client.post(f"/i/{iid}/done", data=form({"next": "/"}), follow_redirects=False).status_code == 303
     assert "Notes" in client.get("/?tab=done").text and "Notes" not in client.get("/?tab=unread").text
     assert store.get_item(iid)["done_at"]
-    client.post(f"/i/{iid}/undone")
+    client.post(f"/i/{iid}/undone", data=form())
     assert store.get_item(iid)["done"] == 0
-    assert client.post(f"/i/{iid}/delete", data={"next": f"/i/{iid}"}, follow_redirects=False).headers["location"] == "/"
+    assert client.post(f"/i/{iid}/delete", data=form({"next": f"/i/{iid}"}), follow_redirects=False).headers["location"] == "/"
     assert store.get_item(iid) is None and not (store.FILES_DIR / f"{iid}.md").exists()
 
 
@@ -103,7 +107,7 @@ def test_html_state_roundtrip(client):
     assert client.get(f"/state/{iid}").json() == {}
     bad = {"Origin": "https://evil.example"}
     assert client.put(f"/state/{iid}", headers=bad, content=b"{}").status_code == 403
-    ok = {"Origin": "http://inbox.test"}
+    ok = {"Origin": "http://inbox.test", "X-Inbox-CSRF": ui.CSRF_TOKEN}
     assert client.put(f"/state/{iid}", headers=ok, content=b"[1]").status_code == 400
     assert client.put(f"/state/{iid}", headers=ok, content=b'{"done:1":"1"}').status_code == 204
     assert client.get(f"/state/{iid}").json() == {"done:1": "1"}
@@ -121,13 +125,15 @@ def test_public_origin_works_behind_proxy(client, monkeypatch):
     iid = client.post("/api/push", headers=AUTH, data={"title": "Behind proxy"},
                       files={"file": ("a.md", b"# Report")}).json()["id"]
     headers = {"Origin": "https://art.odusfera.pl"}
-    share = client.post(f"/i/{iid}/shares", headers=headers, data={"duration": "day"})
+    assert f"name=_csrf value='{ui.CSRF_TOKEN}'" in client.get(f"/i/{iid}").text
+    share = client.post(f"/i/{iid}/shares", headers=headers, data=form({"duration": "day"}))
     assert share.status_code == 200 and "https://art.odusfera.pl/s/" in share.text
     project = store.create_project("Proxy destination")
-    assert client.post(f"/i/{iid}/project", headers=headers, data={"project_id": project["id"]},
+    assert client.post(f"/i/{iid}/project", headers=headers, data=form({"project_id": project["id"]}),
                        follow_redirects=False).status_code == 303
     assert store.get_item(iid)["project_id"] == project["id"]
-    assert client.put(f"/state/{iid}", headers=headers, content=b'{"checked":true}').status_code == 204
+    assert client.put(f"/state/{iid}", headers={**headers, "X-Inbox-CSRF": ui.CSRF_TOKEN},
+                      content=b'{"checked":true}').status_code == 204
     assert client.post(f"/i/{iid}/shares", headers={"Origin": "https://evil.example"},
                        data={"duration": "day"}).status_code == 403
     assert client.put(f"/state/{iid}", headers={"Origin": "https://evil.example"},
@@ -180,7 +186,7 @@ def test_projects_can_file_and_filter_artifacts(client):
 
 
 def test_projects_ui(client):
-    created = client.post("/projects", data={"name": "UI folder"}, follow_redirects=False)
+    created = client.post("/projects", data=form({"name": "UI folder"}), follow_redirects=False)
     assert created.status_code == 303 and created.headers["location"].startswith("/projects/")
     assert "UI folder" in client.get("/projects").text
 
@@ -191,12 +197,12 @@ def test_project_assignment_and_navigation(client):
                       files={"file": ("report.md", b"# Report")}).json()["id"]
     home = client.get("/").text
     assert "All projects" in home and "Settings" in home and "Agents" in home
-    assert client.post(f"/i/{iid}/project", data={"project_id": project["id"]},
+    assert client.post(f"/i/{iid}/project", data=form({"project_id": project["id"]}),
                        follow_redirects=False).status_code == 303
     assert store.get_item(iid)["project_id"] == project["id"]
     assert "Filed report" in client.get(f"/projects/{project['id']}?tab=all").text
     assert "Manage agents" in client.get("/settings").text
-    assert client.post(f"/i/{iid}/project", data={"project_id": ""}).status_code == 200
+    assert client.post(f"/i/{iid}/project", data=form({"project_id": ""})).status_code == 200
     assert store.get_item(iid)["project_id"] is None
 
 
@@ -209,8 +215,8 @@ def test_move_between_projects_from_list_and_agent(client):
     source = client.get(f"/projects/{first['id']}?tab=all").text
     assert f"action='/i/{iid}/project'" in source
     assert f"value='{second['id']}'" in source
-    moved = client.post(f"/i/{iid}/project", data={"project_id": second["id"],
-                                                   "next": f"/projects/{first['id']}?tab=all"}, follow_redirects=False)
+    moved = client.post(f"/i/{iid}/project", data=form({"project_id": second["id"],
+                                                        "next": f"/projects/{first['id']}?tab=all"}), follow_redirects=False)
     assert moved.status_code == 303 and moved.headers["location"] == f"/projects/{first['id']}?tab=all"
     assert "Moving report" not in client.get(f"/projects/{first['id']}?tab=all").text
     assert "Moving report" in client.get(f"/projects/{second['id']}?tab=all").text
@@ -246,7 +252,7 @@ def test_rest_agent_can_create_and_push_into_project(client):
 def test_share_link_is_scoped_revocable_and_hashed(client, monkeypatch):
     iid = client.post("/api/push", headers=AUTH, data={"title": "Отчёт"},
                       files={"file": ("report.md", b"# Shared report")}).json()["id"]
-    created = client.post(f"/i/{iid}/shares", data={"duration": "week"})
+    created = client.post(f"/i/{iid}/shares", data=form({"duration": "week"}))
     assert created.status_code == 200
     token = re.search(r"/s/([A-Za-z0-9_-]{43})", created.text).group(1)
     share = store.list_shares(iid)[0]
@@ -266,7 +272,7 @@ def test_share_link_is_scoped_revocable_and_hashed(client, monkeypatch):
     assert client.get(f"/s/{'x'*43}").status_code == 404
     assert client.get(f"/state/{iid}").status_code == 401
     auth_ui = {"Authorization": "Basic " + base64.b64encode(b"admin:secret").decode()}
-    assert client.post(f"/i/{iid}/shares/{share['id']}/revoke", headers=auth_ui,
+    assert client.post(f"/i/{iid}/shares/{share['id']}/revoke", headers=auth_ui, data=form(),
                        follow_redirects=False).status_code == 303
     assert client.get(f"/s/{token}").status_code == 404
     assert client.get(f"/s/{token}/raw").status_code == 404
@@ -291,7 +297,7 @@ def test_ui_sort_filter_bulk(client):
     html = client.get("/?sort=category&tab=all").text
     assert html.index("alpha (") < html.index("zeta (")
     assert "alpha (2)" in html
-    client.post("/bulk/done", data={"cat": "alpha", "next": "/"})
+    client.post("/bulk/done", data=form({"cat": "alpha", "next": "/"}))
     unread = {i["title"] for i in store.list_items("unread", "alpha")}
     assert unread == set()
     assert any(i["title"] == "one" for i in store.list_items("unread"))
@@ -430,7 +436,7 @@ def test_tokens_stored_hashed_and_duplicate_names(client):
 
 def test_agents_ui(client, monkeypatch):
     origin = {"Origin": "http://inbox.test"}
-    r = client.post("/agents/new", data={"name": "ui-made"}, headers=origin)
+    r = client.post("/agents/new", data=form({"name": "ui-made"}), headers=origin)
     assert r.status_code == 200 and "/install?claim=" in r.text and r.headers["cache-control"] == "no-store"
     assert client.post("/agents/new", data={"name": "ui-made2"}, headers={"Origin": "http://evil.test"}).status_code == 403
     page = client.get("/agents")

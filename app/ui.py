@@ -1,5 +1,7 @@
 """Server-rendered web UI (no JS needed except a delete confirm)."""
 import html
+import hashlib
+import hmac
 import json
 import re
 import os
@@ -15,6 +17,8 @@ from starlette.routing import Route
 from . import store
 
 BASE_URL = os.environ.get("INBOX_BASE_URL", "http://localhost:8000").rstrip("/")
+_csrf_key = (os.environ.get("INBOX_API_TOKEN") or secrets.token_urlsafe(32)).encode()
+CSRF_TOKEN = hmac.new(_csrf_key, b"artifact-inbox-ui-forms-v1", hashlib.sha256).hexdigest()
 _md = MarkdownIt("commonmark", {"html": False, "linkify": False}).enable("table").enable("strikethrough")
 _TAGS = {"p", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "blockquote", "pre", "code",
          "em", "strong", "del", "a", "img", "table", "thead", "tbody", "tr", "th", "td", "sup", "sub"}
@@ -60,7 +64,7 @@ try{Object.defineProperty(navigator,'clipboard',{value:c,configurable:true})}cat
 BRIDGE = ("(function(){var f=document.getElementById('htmlview'),t;window.addEventListener('message',function(ev){"
           "if(!f||ev.source!==f.contentWindow||!ev.data||typeof ev.data.readState!=='string')return;"
           "var b=ev.data.readState;clearTimeout(t);t=setTimeout(function(){fetch('/state/__ID__',{method:'PUT',"
-          "headers:{'Content-Type':'application/json'},body:b,credentials:'same-origin'})},300)})})();")
+          "headers:{'Content-Type':'application/json','X-Inbox-CSRF':'__CSRF__'},body:b,credentials:'same-origin'})},300)})})();")
 
 
 def e(s) -> str:
@@ -73,6 +77,11 @@ SCRIPT = ("document.addEventListener('submit',function(ev){var m=ev.target.getAt
 
 def page(title: str, body: str, status: int = 200, side: str = "", script: str = "", public: bool = False) -> HTMLResponse:
     nonce = secrets.token_urlsafe(12)
+    if not public:
+        # Every server-rendered form carries a token. This works behind a proxy even when
+        # it rewrites Host or Origin, while a different site cannot read the protected page.
+        body = re.sub(r"(<form\b[^>]*>)", lambda m: m.group(1) +
+                      f"<input type=hidden name=_csrf value='{CSRF_TOKEN}'>", body)
     doc = (f"<!doctype html><html lang=en><head><meta charset=utf-8>"
            f"<meta name=viewport content='width=device-width,initial-scale=1'>"
            f"<meta name=color-scheme content='light dark'><title>{e(title)}</title><style>{CSS}</style></head>"
@@ -122,14 +131,6 @@ def qs(**kw) -> str:
 
 def safe_next(v: str | None, default: str = "/") -> str:
     return v if v and v.startswith("/") and not v.startswith("//") and "\\" not in v else default
-
-
-def same_origin(request: Request, origin: str) -> bool:
-    # The tunnel can forward a private Host while the browser sends the public Origin.
-    # INBOX_BASE_URL is configured by the operator and is the exact public origin we serve.
-    public = urllib.parse.urlsplit(BASE_URL)
-    return origin in (f"{request.url.scheme}://{request.headers.get('host')}",
-                      f"{public.scheme}://{public.netloc}")
 
 
 def project_options(projects: list[dict], current: str | None) -> str:
@@ -228,7 +229,7 @@ def _reader(it: dict, notice: str = "") -> Response:
     elif it["type"] == "html":
         view = (f"<iframe id=htmlview class=view sandbox='allow-scripts' allow='clipboard-write' "
                 f"src='{raw}' title='{e(it['title'])}'></iframe>")
-        extra = BRIDGE.replace("__ID__", it["id"])
+        extra = BRIDGE.replace("__ID__", it["id"]).replace("__CSRF__", CSRF_TOKEN)
     else:
         text = path.read_text("utf-8", errors="replace")
         view = (f"<div class=doc>{render_markdown(text)}</div>" if it["type"] == "markdown"
@@ -264,7 +265,7 @@ def reader(request: Request) -> Response:
 async def create_share(request: Request) -> Response:
     form = await _form(request)
     if form is None:
-        return Response("cross-origin request refused", 403)
+        return Response("Form expired. Reload the page and try again.", 403)
     try:
         _, token = store.create_share(request.path_params["id"], form.get("duration") or "week")
     except store.PushError as exc:
@@ -279,7 +280,7 @@ async def create_share(request: Request) -> Response:
 async def revoke_share(request: Request) -> Response:
     form = await _form(request)
     if form is None:
-        return Response("cross-origin request refused", 403)
+        return Response("Form expired. Reload the page and try again.", 403)
     store.revoke_share(request.path_params["id"], request.path_params["share_id"])
     return RedirectResponse(f"/i/{request.path_params['id']}", 303)
 
@@ -287,7 +288,7 @@ async def revoke_share(request: Request) -> Response:
 async def move_item(request: Request) -> Response:
     form = await _form(request)
     if form is None:
-        return Response("cross-origin request refused", 403)
+        return Response("Form expired. Reload the page and try again.", 403)
     try:
         item = store.set_project(request.path_params["id"], form.get("project_id") or None)
     except store.PushError as exc:
@@ -301,7 +302,7 @@ async def projects(request: Request) -> Response:
     if request.method == "POST":
         form = await _form(request)
         if form is None:
-            return Response("cross-origin request refused", 403)
+            return Response("Form expired. Reload the page and try again.", 403)
         try:
             project = store.create_project(form.get("name"))
         except store.PushError as exc:
@@ -423,9 +424,8 @@ async def state(request: Request) -> Response:
     if not store.get_item(item_id):
         return Response("not found", 404)
     if request.method == "PUT":
-        origin = request.headers.get("origin")
-        if not origin or not same_origin(request, origin):
-            return Response("cross-origin request refused", 403)
+        if not hmac.compare_digest(request.headers.get("x-inbox-csrf", ""), CSRF_TOKEN):
+            return Response("Form expired. Reload the page and try again.", 403)
         body = await request.body()
         if len(body) > store.MAX_STATE:
             return Response("too large", 413)
@@ -441,17 +441,16 @@ async def state(request: Request) -> Response:
 
 
 async def _form(request: Request):
-    # Cheap CSRF guard on top of SSO cookies: same-origin POSTs only.
-    origin = request.headers.get("origin")
-    if origin and not same_origin(request, origin):
+    form = await request.form()
+    if not hmac.compare_digest(str(form.get("_csrf") or ""), CSRF_TOKEN):
         return None
-    return await request.form()
+    return form
 
 
 async def act(request: Request) -> Response:
     form = await _form(request)
     if form is None:
-        return Response("cross-origin request refused", 403)
+        return Response("Form expired. Reload the page and try again.", 403)
     item_id, action = request.path_params["id"], request.path_params["action"]
     nxt = safe_next(form.get("next"))
     if action == "delete":
@@ -466,7 +465,7 @@ async def act(request: Request) -> Response:
 async def bulk(request: Request) -> Response:
     form = await _form(request)
     if form is None:
-        return Response("cross-origin request refused", 403)
+        return Response("Form expired. Reload the page and try again.", 403)
     store.mark_all_done(form.get("cat") or None)
     return RedirectResponse(safe_next(form.get("next")), 303)
 

@@ -41,7 +41,7 @@ async def index(request: Request) -> Response:
 async def new(request: Request) -> Response:
     form = await ui._form(request)
     if form is None:
-        return Response("cross-origin request refused", 403)
+        return Response("Form expired. Reload the page and try again.", 403)
     try:
         _, code = agents.create_claim(form.get("name"))
     except store.PushError as err:
@@ -59,7 +59,7 @@ async def new(request: Request) -> Response:
 async def revoke(request: Request) -> Response:
     form = await ui._form(request)
     if form is None:
-        return Response("cross-origin request refused", 403)
+        return Response("Form expired. Reload the page and try again.", 403)
     agents.revoke(request.path_params["id"])
     return RedirectResponse("/agents", 303)
 
@@ -67,7 +67,7 @@ async def revoke(request: Request) -> Response:
 async def cancel(request: Request) -> Response:
     form = await ui._form(request)
     if form is None:
-        return Response("cross-origin request refused", 403)
+        return Response("Form expired. Reload the page and try again.", 403)
     agents.cancel_claim(request.path_params["id"])
     return RedirectResponse("/agents", 303)
 
