@@ -39,9 +39,9 @@ nav.tabs,.chips,.bar,.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center
 .project-move{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:14px;padding-top:13px;border-top:1px solid var(--bd)}.project-move select{min-width:150px;max-width:100%}
 form{display:inline;margin:0}button,.btn{font:inherit;font-size:.86rem;font-weight:550;padding:7px 12px;border-radius:8px;border:1px solid var(--bd);background:var(--card);color:var(--fg);cursor:pointer;text-decoration:none;display:inline-block}button:hover,.btn:hover{border-color:var(--ac);color:var(--ac)}button.ok,.btn.primary{background:var(--ac);border-color:var(--ac);color:#fff}button.bad{color:var(--bad)}input,select{font:inherit;padding:8px 11px;border:1px solid var(--bd);border-radius:8px;background:var(--card);color:var(--fg);max-width:100%}input:focus,select:focus{outline:2px solid var(--ac);outline-offset:1px}
 h2.grp{font-size:.85rem;margin:25px 0 8px;color:var(--mut);text-transform:uppercase;letter-spacing:.07em}.doc{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:16px 24px;overflow-wrap:anywhere}.doc img{max-width:100%}.doc pre{overflow:auto;background:var(--bg);padding:12px;border-radius:8px}.doc table{border-collapse:collapse}.doc td,.doc th{border:1px solid var(--bd);padding:5px 9px}
-iframe.view,embed.view{width:100%;height:78vh;border:1px solid var(--bd);border-radius:12px;background:#fff}pre.txt{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;padding:12px 0}.empty{color:var(--mut);padding:40px 16px;text-align:center;background:var(--card);border:1px dashed var(--bd);border-radius:14px}.notice{background:var(--ac-soft);color:var(--fg);padding:13px 16px;border-radius:10px;margin:14px 0}.share-link{display:block;overflow-wrap:anywhere;padding:10px 12px;background:var(--bg);border-radius:8px;margin:8px 0}
+iframe.view,embed.view{width:100%;height:78vh;border:1px solid var(--bd);border-radius:12px;background:#fff}pre.txt{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;padding:12px 0}.empty{color:var(--mut);padding:40px 16px;text-align:center;background:var(--card);border:1px dashed var(--bd);border-radius:14px}.notice{background:var(--ac-soft);color:var(--fg);padding:13px 16px;border-radius:10px;margin:14px 0}.share-row{display:flex;align-items:center;gap:9px;margin-top:10px}.share-link{display:block;flex:1;min-width:0;overflow-wrap:anywhere;padding:10px 12px;background:var(--bg);border-radius:8px}.share-row button{white-space:nowrap}
 .public{display:block}.public main{max-width:900px}.public .brand{padding:0;margin-bottom:34px}
-@media(max-width:760px){body{display:block}label.menu{display:inline-flex;align-items:center;gap:7px;position:sticky;top:8px;z-index:5;margin:10px 16px 0;padding:7px 12px;border:1px solid var(--bd);border-radius:9px;background:var(--card);cursor:pointer;box-shadow:var(--shadow)}aside.side{display:none;position:static;height:auto;border-right:0;border-bottom:1px solid var(--bd);padding-top:12px}#navtoggle:checked~aside.side{display:flex}main{padding:24px 16px 56px}.heading{flex-wrap:wrap}}
+@media(max-width:760px){body{display:block}label.menu{display:inline-flex;align-items:center;gap:7px;position:sticky;top:8px;z-index:5;margin:10px 16px 0;padding:7px 12px;border:1px solid var(--bd);border-radius:9px;background:var(--card);cursor:pointer;box-shadow:var(--shadow)}aside.side{display:none;position:static;height:auto;border-right:0;border-bottom:1px solid var(--bd);padding-top:12px}#navtoggle:checked~aside.side{display:flex}main{padding:24px 16px 56px}.heading{flex-wrap:wrap}.share-row{align-items:stretch;flex-direction:column}}
 """
 
 # Injected into served HTML items. Runs in the sandboxed frame (opaque origin, so real storage throws):
@@ -72,7 +72,15 @@ def e(s) -> str:
 
 
 SCRIPT = ("document.addEventListener('submit',function(ev){var m=ev.target.getAttribute('data-confirm');"
-          "if(m&&!confirm(m))ev.preventDefault()})")
+          "if(m&&!confirm(m))ev.preventDefault()});"
+          "document.addEventListener('click',async function(ev){var b=ev.target.closest('button[data-copy-link]');"
+          "if(!b)return;var a=b.parentElement.querySelector('a.share-link');if(!a)return;"
+          "function fallback(){var t=document.createElement('textarea');t.value=a.href;t.style.position='fixed';"
+          "t.style.opacity='0';document.body.appendChild(t);t.select();var ok=document.execCommand('copy');t.remove();"
+          "if(!ok)throw Error('copy failed')}"
+          "try{if(navigator.clipboard&&navigator.clipboard.writeText){try{await navigator.clipboard.writeText(a.href)}"
+          "catch(x){fallback()}}else{fallback()}b.textContent='Copied!'}catch(x){b.textContent='Copy failed'}"
+          "setTimeout(function(){b.textContent='Copy to clipboard'},2500)})")
 
 
 def page(title: str, body: str, status: int = 200, side: str = "", script: str = "", public: bool = False) -> HTMLResponse:
@@ -273,7 +281,8 @@ async def create_share(request: Request) -> Response:
     it = store.get_item(request.path_params["id"])
     url = f"{BASE_URL}/s/{token}"
     notice = ("<div class=notice><b>Share link created</b><div class=meta>Copy it now; it will not be shown again.</div>"
-              f"<a class=share-link href='{e(url)}' rel=noreferrer>{e(url)}</a></div>")
+              f"<div class=share-row><a class=share-link href='{e(url)}' rel=noreferrer>{e(url)}</a>"
+              "<button type=button data-copy-link>Copy to clipboard</button></div></div>")
     return _reader(it, notice)
 
 
